@@ -28,3 +28,7 @@ python/python3 analyzer.py -n 500 (genera un análisis de un total de n líneas)
 ```bash
 git clone https://github.com/aarondev-lab/log-analyzer.git
 cd log-analyzer
+
+## 📸 Demo
+
+![Demo del analizador de logs](assets/demo.gif)
