@@ -143,7 +143,7 @@ def analizar_logs(lineas):
     iterador = tqdm(lineas, desc="Analizando logs", unit=" líneas") if HAS_TQDM else lineas
 
     for linea in iterador:
-        time.sleep(1)  # Este sleep sirve para no generar saturación en el proceso (importante por si tiramos un nmap)
+        time.sleep(0.10)  # Este sleep sirve para no generar saturación en el proceso (importante por si tiramos un nmap)
         timestamp, ip, evento, puerto = parsear_linea(linea)
         if not ip:
             continue  # Si no hay IP, me salto la línea, no me sirve
@@ -241,7 +241,7 @@ def generar_reporte_html(stats, archivo_salida="logs_report.html"):
     with open(archivo_salida, 'w', encoding='utf-8') as f:
         f.write(html_content)
 
-    print(f"✅ Informe HTML generado: {archivo_salida}")
+    print(f" Informe HTML generado: {archivo_salida}")
 
     # Intento abrirlo en el navegador por defecto
     try:
