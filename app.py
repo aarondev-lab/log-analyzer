@@ -6,11 +6,10 @@ from utils.analizador import generar_logs_simulados, analizar_logs
 
 st.set_page_config(
     page_title="Analizador de Logs",
-    page_icon="🔍",
     layout="wide"
 )
 
-st.title("🔍 Analizador de Logs de Seguridad")
+st.title(" Analizador de Logs de Seguridad")
 st.markdown("""
 Esta herramienta analiza logs de servidor para detectar patrones de ataque:
 - **Fuerza bruta**: múltiples intentos fallidos desde una misma IP
@@ -44,7 +43,7 @@ with st.sidebar:
         max_value=300,
         value=60
     )
-    if st.button("🚀 Ejecutar Análisis", type="primary"):
+    if st.button("Ejecutar Análisis", type="primary"):
         st.session_state.ejecutar = True
     else:
         if 'ejecutar' not in st.session_state:
@@ -60,7 +59,7 @@ if st.session_state.ejecutar:
             progress_bar.progress((i + 1) * 10)
         lineas = generar_logs_simulados(num_lineas)
         progress_bar.progress(100)
-        status_text.text("✅ Logs generados")
+        status_text.text("Logs generados..")
         time.sleep(0.5)
         status_text.text("Analizando logs...")
         progress_bar.progress(0)
@@ -74,7 +73,7 @@ if st.session_state.ejecutar:
             umbral_scan=umbral_scan
         )
         progress_bar.progress(100)
-        status_text.text("✅ Análisis completado")
+        status_text.text("Análisis completado..")
         time.sleep(0.5)
         progress_bar.empty()
         status_text.empty()
@@ -82,14 +81,14 @@ if st.session_state.ejecutar:
     st.success(f"Análisis completado: {stats['total_lineas']} líneas procesadas")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("📊 Líneas totales", stats['total_lineas'])
+        st.metric("Líneas totales", stats['total_lineas'])
     with col2:
-        st.metric("🕵️ IPs únicas", len(stats['eventos_por_ip']))
+        st.metric("IPs únicas", len(stats['eventos_por_ip']))
     with col3:
         total_alertas = len(stats['ips_sospechosas_bf']) + len(stats['ips_sospechosas_scan'])
         st.metric("⚠️ Alertas", total_alertas)
 
-    with st.expander("🔴 IPs sospechosas de fuerza bruta", expanded=True):
+    with st.expander("IPs sospechosas de fuerza bruta", expanded=True):
         if stats['ips_sospechosas_bf']:
             data_bf = []
             for ip in sorted(stats['ips_sospechosas_bf']):
@@ -103,7 +102,7 @@ if st.session_state.ejecutar:
         else:
             st.info("No se detectaron ataques de fuerza bruta.")
 
-    with st.expander("🟠 IPs sospechosas de escaneo de puertos", expanded=True):
+    with st.expander("IPs sospechosas de escaneo de puertos", expanded=True):
         if stats['ips_sospechosas_scan']:
             data_scan = []
             for ip in sorted(stats['ips_sospechosas_scan']):
@@ -140,7 +139,7 @@ if st.session_state.ejecutar:
         st.session_state.ejecutar = False
         st.rerun()
 else:
-    st.info("👈 Configura los parámetros en la barra lateral y haz clic en 'Ejecutar Análisis' para comenzar")
+    st.info("Configura los parámetros en la barra lateral y haz clic en 'Ejecutar Análisis' para comenzar")
     with st.expander("ℹ️ ¿Cómo funciona?"):
         st.markdown("""
         1. **Genera logs simulados** con patrones de tráfico normales y maliciosos
