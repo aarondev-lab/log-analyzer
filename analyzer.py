@@ -250,7 +250,7 @@ def generar_reporte_html(stats, archivo_salida="logs_report.html"):
     except Exception as e:
         print(f"[!] No se pudo abrir el navegador automáticamente: {e}")
 
-# ===================== MAIN =====================
+# = MAIN CODE =
 def main():
     """
     Aquí es donde empieza todo. Recojo los argumentos de la terminal,
