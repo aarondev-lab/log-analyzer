@@ -143,7 +143,7 @@ def analizar_logs(lineas):
     iterador = tqdm(lineas, desc="Analizando logs", unit=" líneas") if HAS_TQDM else lineas
 
     for linea in iterador:
-        time.sleep(0.10)  # Este sleep sirve para no generar saturación en el proceso (importante por si tiramos un nmap)
+        time.sleep(0.75)  # Este sleep sirve para no generar saturación en el proceso (importante por si tiramos un nmap)
         timestamp, ip, evento, puerto = parsear_linea(linea)
         if not ip:
             continue  # Si no hay IP, me salto la línea, no me sirve
