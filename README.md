@@ -29,7 +29,7 @@ cd log-analyzer
 pip install -r requirements.txt
 
 ### 3. Inicialización del script
-python/python3 analyzer.py
+python analyzer.py
 
 python analyzer.py -n 500 ("especifíca el n de líneas")
 
