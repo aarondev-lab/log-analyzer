@@ -39,7 +39,20 @@ También puedes analizar logs `.gz`. Para ajustar las detecciones están `--umbr
 python -m streamlit run app.py
 ```
 
-En la página puedes subir uno o varios archivos, o pegar el contenido directamente. Si ejecutas Streamlit en otro equipo o servidor, los archivos se procesan allí. La aplicación no consulta servicios externos de reputación.
+En la página puedes subir uno o varios archivos, o pegar el contenido directamente. Si ejecutas Streamlit en otro equipo o servidor, los archivos se procesan allí. La consulta de reputación externa es opcional y solo se realiza cuando la solicitas.
+
+### Consultar reputación y preparar bloqueos
+
+La consulta externa es opcional. Crea una clave de AbuseIPDB y configúrala en PowerShell antes de iniciar Streamlit:
+
+```powershell
+$env:ABUSEIPDB_API_KEY = "tu_clave_de_AbuseIPDB"
+python -m streamlit run app.py
+```
+
+Al pulsar **Consultar reputación externa**, se envían a AbuseIPDB únicamente las IPs públicas extraídas del log (hasta 20 por fuente); no se envían las líneas del archivo. La aplicación muestra el score y los reportes recientes. Un score alto indica reportes de abuso, no confirma por sí solo que la IP sea maliciosa.
+
+Si alguna IP obtiene un score de 75 o más, puedes descargar reglas para Windows Defender Firewall o Linux UFW. La aplicación no las ejecuta: revísalas primero y aplícalas manualmente con permisos de administrador. Una regla incorrecta puede bloquear tráfico legítimo.
 
 ## A tener en cuenta
 
