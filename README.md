@@ -43,16 +43,18 @@ En la página puedes subir uno o varios archivos, o pegar el contenido directame
 
 ### Consultar reputación y preparar bloqueos
 
-La consulta externa es opcional. Crea una clave de AbuseIPDB y configúrala en PowerShell antes de iniciar Streamlit:
+La consulta externa es opcional. En la barra lateral puedes elegir VirusTotal o AbuseIPDB y pegar la clave correspondiente en el campo protegido. También puedes guardar la clave de VirusTotal en PowerShell antes de iniciar Streamlit:
 
 ```powershell
-$env:ABUSEIPDB_API_KEY = "tu_clave_de_AbuseIPDB"
+$env:VIRUSTOTAL_API_KEY = "tu_clave_de_VirusTotal"
 python -m streamlit run app.py
 ```
 
-Al pulsar **Consultar reputación externa**, se envían a AbuseIPDB únicamente las IPs públicas extraídas del log (hasta 20 por fuente); no se envían las líneas del archivo. La aplicación muestra el score y los reportes recientes. Un score alto indica reportes de abuso, no confirma por sí solo que la IP sea maliciosa.
+Con VirusTotal, la tabla muestra detecciones maliciosas sobre el total de motores (por ejemplo, `16/91`), sospechosos y fecha del análisis. El plan público permite 4 consultas por minuto y 500 al día, y no se permite usarlo en productos comerciales. VirusTotal indica que los indicadores consultados se incorporan a su conjunto de datos; marca la casilla de consentimiento antes de consultar. Solo se envían IPs públicas, nunca las líneas del log.
 
-Si alguna IP obtiene un score de 75 o más, puedes descargar reglas para Windows Defender Firewall o Linux UFW. La aplicación no las ejecuta: revísalas primero y aplícalas manualmente con permisos de administrador. Una regla incorrecta puede bloquear tráfico legítimo.
+AbuseIPDB muestra su propia puntuación de confianza y número de reportes. Esa puntuación no es comparable con el ratio de detecciones de VirusTotal.
+
+Si VirusTotal marca al menos 5 motores como maliciosos o AbuseIPDB da una puntuación de 75 o más, puedes descargar reglas para Windows Defender Firewall o Linux UFW. La aplicación no las ejecuta: revísalas primero y aplícalas manualmente con permisos de administrador. Una regla incorrecta puede bloquear tráfico legítimo.
 
 ## A tener en cuenta
 
