@@ -1,150 +1,94 @@
 # app.py
-import streamlit as st
 import pandas as pd
-import time
-from utils.analizador import generar_logs_simulados, analizar_logs
+import streamlit as st
 
-st.set_page_config(
-    page_title="Analizador de Logs",
-    layout="wide"
-)
+from utils.analizador import analizar_logs, leer_logs_subidos
 
-st.title(" Analizador de Logs de Seguridad")
+st.set_page_config(page_title="Logwatch | Security Analysis", page_icon="◉", layout="wide")
 st.markdown("""
-Esta herramienta analiza logs de servidor para detectar patrones de ataque:
-- **Fuerza bruta**: múltiples intentos fallidos desde una misma IP
-- **Escaneo de puertos**: conexiones a múltiples puertos desde una misma IP
-""")
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap');
+:root { color-scheme: dark; }
+.stApp { background: #101614; color: #e7eeea; font-family: 'DM Sans', sans-serif; }
+[data-testid="stSidebar"] { background: #171f1c; border-right: 1px solid #2a3731; }
+[data-testid="stMetric"] { background: #18211d; border: 1px solid #2a3731; padding: 16px 18px; border-radius: 6px; }
+[data-testid="stMetricLabel"] { color: #a6b5ad; }
+code, [data-testid="stCode"] { font-family: 'DM Mono', monospace; }
+h1, h2, h3 { letter-spacing: 0 !important; }
+div.stButton > button[kind="primary"] { background: #b9e769; color: #152017; border: 0; font-weight: 700; }
+div.stButton > button[kind="primary"]:hover { background: #c9f47b; color: #152017; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("### ◉ LOGWATCH  /  SECURITY ANALYSIS")
+st.title("Análisis de actividad")
+st.caption("Inspección de logs de autenticación, servidores web y firewall. No se consultan servicios externos de reputación.")
 
 with st.sidebar:
-    st.header("⚙️ Configuración")
-    num_lineas = st.slider(
-        "Número de líneas a generar",
-        min_value=50,
-        max_value=500,
-        value=200,
-        step=50
-    )
-    umbral_bf = st.number_input(
-        "Umbral de fuerza bruta (intentos)",
-        min_value=3,
-        max_value=20,
-        value=5
-    )
-    umbral_scan = st.number_input(
-        "Umbral de escaneo (puertos)",
-        min_value=3,
-        max_value=20,
-        value=5
-    )
-    ventana_tiempo = st.number_input(
-        "Ventana de tiempo (segundos)",
-        min_value=10,
-        max_value=300,
-        value=60
-    )
-    if st.button("Ejecutar Análisis", type="primary"):
-        st.session_state.ejecutar = True
-    else:
-        if 'ejecutar' not in st.session_state:
-            st.session_state.ejecutar = False
+    st.markdown("## Parámetros de detección")
+    umbral_bf = st.number_input("Fallos para fuerza bruta", min_value=2, max_value=100, value=5)
+    ventana_tiempo = st.number_input("Ventana de tiempo (segundos)", min_value=1, max_value=3600, value=60)
+    umbral_scan = st.number_input("Puertos de destino distintos", min_value=2, max_value=100, value=5)
+    umbral_web = st.number_input("Rutas 404 distintas", min_value=2, max_value=500, value=10)
+    analizar = st.button("Analizar logs", type="primary", use_container_width=True)
+    st.caption("Formato admitido: syslog/auth.log, Apache o Nginx, firewall y texto plano. También admite .gz.")
 
-if st.session_state.ejecutar:
-    with st.spinner("Generando logs simulados..."):
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        status_text.text("Generando logs...")
-        for i in range(10):
-            time.sleep(0.1)
-            progress_bar.progress((i + 1) * 10)
-        lineas = generar_logs_simulados(num_lineas)
-        progress_bar.progress(100)
-        status_text.text("Logs generados..")
-        time.sleep(0.5)
-        status_text.text("Analizando logs...")
-        progress_bar.progress(0)
-        for i in range(10):
-            time.sleep(0.1)
-            progress_bar.progress((i + 1) * 10)
-        stats = analizar_logs(
-            lineas,
-            umbral_bf=umbral_bf,
-            ventana_tiempo=ventana_tiempo,
-            umbral_scan=umbral_scan
-        )
-        progress_bar.progress(100)
-        status_text.text("Análisis completado..")
-        time.sleep(0.5)
-        progress_bar.empty()
-        status_text.empty()
+subir, pegar = st.tabs(["Subir archivo", "Pegar contenido"])
+with subir:
+    archivo = st.file_uploader("Selecciona uno o varios logs", type=["log", "txt", "out", "gz"], accept_multiple_files=True)
+with pegar:
+    texto = st.text_area("Contenido del log", height=220, placeholder="Pega aquí las líneas que quieras analizar.")
 
-    st.success(f"Análisis completado: {stats['total_lineas']} líneas procesadas")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Líneas totales", stats['total_lineas'])
-    with col2:
-        st.metric("IPs únicas", len(stats['eventos_por_ip']))
-    with col3:
-        total_alertas = len(stats['ips_sospechosas_bf']) + len(stats['ips_sospechosas_scan'])
-        st.metric("⚠️ Alertas", total_alertas)
-
-    with st.expander("IPs sospechosas de fuerza bruta", expanded=True):
-        if stats['ips_sospechosas_bf']:
-            data_bf = []
-            for ip in sorted(stats['ips_sospechosas_bf']):
-                data_bf.append({
-                    "IP": ip,
-                    "Intentos fallidos": stats['eventos_por_ip'][ip]['failed'],
-                    "Eventos totales": sum(stats['eventos_por_ip'][ip].values())
-                })
-            df_bf = pd.DataFrame(data_bf)
-            st.dataframe(df_bf, use_container_width=True)
+if analizar:
+    fuentes = []
+    try:
+        for carga in archivo or []:
+            fuentes.append((carga.name, leer_logs_subidos(carga.getvalue(), carga.name)))
+        if texto.strip():
+            fuentes.append(("contenido pegado", texto.splitlines()))
+        if not fuentes:
+            st.error("Selecciona al menos un archivo o pega contenido antes de iniciar el análisis.")
         else:
-            st.info("No se detectaron ataques de fuerza bruta.")
+            resultados = []
+            with st.spinner("Leyendo y analizando las fuentes seleccionadas…"):
+                for nombre, lineas in fuentes:
+                    stats = analizar_logs(lineas, int(umbral_bf), int(ventana_tiempo), int(umbral_scan), int(umbral_web))
+                    resultados.append({"fuente": nombre, "stats": stats})
+            st.session_state.resultados = resultados
+    except (OSError, EOFError, ValueError) as error:
+        st.error(f"No se pudo leer el archivo: {error}")
 
-    with st.expander("IPs sospechosas de escaneo de puertos", expanded=True):
-        if stats['ips_sospechosas_scan']:
-            data_scan = []
-            for ip in sorted(stats['ips_sospechosas_scan']):
-                data_scan.append({
-                    "IP": ip,
-                    "Puertos": ', '.join(map(str, sorted(stats['puertos_por_ip'][ip]))),
-                    "Total puertos": len(stats['puertos_por_ip'][ip])
-                })
-            df_scan = pd.DataFrame(data_scan)
-            st.dataframe(df_scan, use_container_width=True)
-        else:
-            st.info("No se detectaron escaneos de puertos.")
+for resultado in st.session_state.get("resultados", []):
+    stats = resultado["stats"]
+    with st.container():
+        st.markdown(f"#### {resultado['fuente']}")
+        total_alertas = len(stats["ips_sospechosas_bf"] | stats["ips_sospechosas_scan"] | stats["ips_sospechosas_web"])
+        cols = st.columns(4)
+        cols[0].metric("Líneas leídas", f"{stats['total_lineas']:,}")
+        cols[1].metric("IPs de origen", f"{len(stats['eventos_por_ip']):,}")
+        cols[2].metric("Líneas con IP", f"{stats['lineas_reconocidas']:,}")
+        cols[3].metric("IPs con alertas", f"{total_alertas:,}")
 
-    with st.expander("📈 Top 5 IPs más activas"):
-        top_ips = sorted(
-            stats['eventos_por_ip'].items(),
-            key=lambda x: sum(x[1].values()),
-            reverse=True
-        )[:5]
-        data_top = []
-        for ip, eventos in top_ips:
-            data_top.append({
-                "IP": ip,
-                "Total": sum(eventos.values()),
-                "Fallidos": eventos['failed'],
-                "Exitosos": eventos['accepted'],
-                "Escaneo": eventos['port_scan'],
-                "Otros": eventos['other']
-            })
-        df_top = pd.DataFrame(data_top)
-        st.dataframe(df_top, use_container_width=True)
-
-    if st.button("🔄 Nuevo análisis"):
-        st.session_state.ejecutar = False
-        st.rerun()
-else:
-    st.info("Configura los parámetros en la barra lateral y haz clic en 'Ejecutar Análisis' para comenzar")
-    with st.expander("ℹ️ ¿Cómo funciona?"):
-        st.markdown("""
-        1. **Genera logs simulados** con patrones de tráfico normales y maliciosos
-        2. **Analiza cada línea** extrayendo IPs, eventos y puertos
-        3. **Detecta fuerza bruta** buscando múltiples intentos fallidos en poco tiempo
-        4. **Detecta escaneos** identificando IPs que conectan a muchos puertos distintos
-        5. **Muestra resultados** en tablas interactivas
-        """)
+        brute, ports, web, inventory = st.tabs(["Fuerza bruta", "Puertos", "Actividad web", "Inventario"])
+        with brute:
+            rows = [{"IP de origen": ip, "Fallos": stats["eventos_por_ip"][ip]["failed"]} for ip in sorted(stats["ips_sospechosas_bf"])]
+            st.dataframe(pd.DataFrame(rows, columns=["IP de origen", "Fallos"]), use_container_width=True, hide_index=True)
+            if not rows:
+                st.info("No se superó el umbral de fallos de autenticación.")
+        with ports:
+            rows = [{"IP de origen": ip, "Puertos de destino": ", ".join(map(str, sorted(stats["puertos_por_ip"][ip]))), "Cantidad": len(stats["puertos_por_ip"][ip])} for ip in sorted(stats["ips_sospechosas_scan"])]
+            st.dataframe(pd.DataFrame(rows, columns=["IP de origen", "Puertos de destino", "Cantidad"]), use_container_width=True, hide_index=True)
+            if not rows:
+                st.info("No se detectó actividad en múltiples puertos de destino.")
+        with web:
+            rows = [{"IP de origen": ip, "Errores HTTP": stats["errores_web_por_ip"][ip], "Rutas 404 distintas": len(stats["rutas_404_por_ip"][ip])} for ip in sorted(set(stats["errores_web_por_ip"]) | stats["ips_sospechosas_web"])]
+            st.dataframe(pd.DataFrame(rows, columns=["IP de origen", "Errores HTTP", "Rutas 404 distintas"]), use_container_width=True, hide_index=True)
+            if not rows:
+                st.info("No se encontraron respuestas HTTP 4xx/5xx.")
+        with inventory:
+            rows = []
+            for ip, eventos in sorted(stats["eventos_por_ip"].items(), key=lambda item: sum(item[1].values()), reverse=True):
+                rows.append({"IP": ip, "Eventos": sum(eventos.values()), "Fallos": eventos["failed"], "Accesos": eventos["accepted"], "Errores web": eventos["web_error"], "Firewall": eventos["port_scan"]})
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        if stats["total_lineas"] > stats["lineas_reconocidas"]:
+            st.caption(f"{stats['total_lineas'] - stats['lineas_reconocidas']:,} líneas no contenían una IP reconocible y no se atribuyeron a un origen.")

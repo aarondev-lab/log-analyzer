@@ -1,290 +1,156 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-Analizador de logs de seguridad.
-Este es un script de python donde busco detectar fuerza bruta y escaneos de puertos, 
-ya sea con logs de verdad o generando unos falsos para probar.
-"""
+"""Analizador local de logs de autenticación, web y firewall."""
 import argparse
-import random
-import re
+import shutil
 import sys
-import time
-import os
-import webbrowser  # Este lo he añadido para que me abra el informe automáticamente, que es más cómodo
-from collections import defaultdict
-from datetime import datetime, timedelta
+import webbrowser
+from datetime import datetime
+from pathlib import Path
 
-# Para el informe en HTML uso Jinja2, que me permite separar el diseño del código
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-# Intento importar tqdm para la barra de progreso, si no está, aviso pero el script sigue funcionando
+from utils.analizador import analizar_logs, leer_archivo_logs
+
 try:
-    from tqdm import tqdm
-    HAS_TQDM = True
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+
+    HAS_RICH = True
 except ImportError:
-    HAS_TQDM = False
-    print("[!] Si quieres una barra de progreso más chula, instala tqdm: pip install tqdm", file=sys.stderr)
+    HAS_RICH = False
 
-# ===================== CONFIGURACIÓN =====================
-# Estos valores los puedo ajustar según lo que considere un ataque
-UMBRAL_FUERZA_BRUTA = 5      # Si desde una IP hay más de 5 intentos fallidos en poco tiempo, lo marco
-VENTANA_TIEMPO = 60           # La ventana de tiempo para contar esos intentos (en segundos)
-PUERTOS_ESCANEO = 5           # Si una IP toca más de 5 puertos distintos, lo considero escaneo
 
-# ===================== GENERADOR DE LOGS SIMULADOS =====================
-def generar_logs_simulados(num_lineas=200):
-    """
-    Aquí genero logs falsos para probar el programa, con formato de fecha y mensajes típicos.
-    Así no necesito tener un archivo de log real para hacer pruebas.
-    """
-    logs = []
-    servicios = ['sshd', 'apache2', 'nginx', 'vsftpd', 'mysql']
-    # Me invento un montón de IPs de redes privadas para que parezca real
-    ips = [f"192.168.1.{i}" for i in range(1, 20)] + [f"10.0.0.{i}" for i in range(1, 10)]
-    usuarios = ['root', 'admin', 'aaron', 'user', 'test', 'guest', 'ubuntu', 'ec2-user']
+def _positivo(valor):
+    numero = int(valor)
+    if numero < 1:
+        raise argparse.ArgumentTypeError("el valor debe ser mayor que cero")
+    return numero
 
-    # Para que los tiempos tengan sentido, los genero dentro de la última hora
-    tiempo_base = datetime.now().replace(second=0, microsecond=0)
 
-    for i in range(num_lineas):
-        # Cada línea va con un pequeño desfase de tiempo para que no sean todas iguales
-        delta = timedelta(seconds=random.randint(1, 30))
-        tiempo_actual = tiempo_base + delta * i
-        timestamp = tiempo_actual.strftime("%Y-%m-%d %H:%M:%S")
+def generar_reporte_consola(stats, fuente):
+    total_alertas = len(stats["ips_sospechosas_bf"] | stats["ips_sospechosas_scan"] | stats["ips_sospechosas_web"])
+    if not HAS_RICH:
+        print("\nLOGWATCH | INFORME DE ANÁLISIS")
+        print("=" * 72)
+        print(f"Fuente: {fuente}")
+        print(f"Líneas leídas: {stats['total_lineas']:,} | IPs: {len(stats['eventos_por_ip']):,} | Alertas: {total_alertas:,}")
+        secciones = (
+            ("FUERZA BRUTA", stats["ips_sospechosas_bf"]),
+            ("ESCANEO DE PUERTOS", stats["ips_sospechosas_scan"]),
+            ("SONDEO WEB", stats["ips_sospechosas_web"]),
+        )
+        for titulo, ips in secciones:
+            print(f"\n{titulo}")
+            if ips:
+                for ip in sorted(ips):
+                    print(f"  {ip}")
+            else:
+                print("  Sin alertas")
+        print("=" * 72)
+        return
 
-        ip = random.choice(ips)
-        servicio = random.choice(servicios)
-        pid = random.randint(1000, 9999)
+    consola = Console()
+    resumen = Table.grid(padding=(0, 2))
+    resumen.add_column(style="dim")
+    resumen.add_column(style="bold")
+    resumen.add_row("Fuente", fuente)
+    resumen.add_row("Líneas", f"{stats['total_lineas']:,}")
+    resumen.add_row("Líneas con IP", f"{stats['lineas_reconocidas']:,}")
+    resumen.add_row("IPs únicas", f"{len(stats['eventos_por_ip']):,}")
+    resumen.add_row("IPs con alertas", f"{total_alertas:,}")
+    consola.print(Panel(resumen, title="LOGWATCH  /  INFORME DE ANÁLISIS", border_style="bright_green"))
 
-        # Aquí decido aleatoriamente qué tipo de evento va a ser, con más probabilidad de cosas normales
-        tipo_evento = random.choices(
-            ['failed', 'accepted', 'port_scan', 'normal'],
-            weights=[0.3, 0.2, 0.1, 0.4]
-        )[0]
+    alertas = Table(box=None, expand=True)
+    alertas.add_column("CLASIFICACIÓN", style="bold")
+    alertas.add_column("IP DE ORIGEN", style="cyan")
+    alertas.add_column("EVIDENCIA", overflow="fold")
+    filas = 0
+    for ip in sorted(stats["ips_sospechosas_bf"]):
+        alertas.add_row("Fuerza bruta", ip, f"{stats['eventos_por_ip'][ip]['failed']} fallos de autenticación")
+        filas += 1
+    for ip in sorted(stats["ips_sospechosas_scan"]):
+        puertos = ", ".join(map(str, sorted(stats["puertos_por_ip"][ip])))
+        alertas.add_row("Escaneo de puertos", ip, f"{len(stats['puertos_por_ip'][ip])} puertos destino: {puertos}")
+        filas += 1
+    for ip in sorted(stats["ips_sospechosas_web"]):
+        alertas.add_row("Sondeo web", ip, f"{len(stats['rutas_404_por_ip'][ip])} rutas 404 distintas")
+        filas += 1
+    if not filas:
+        alertas.add_row("Sin alertas", "-", "Ningún umbral de detección fue superado")
+    consola.print(alertas)
 
-        if tipo_evento == 'failed':
-            usuario = random.choice(usuarios)
-            mensaje = f"Failed password for {usuario} from {ip} port {random.randint(1000, 65535)}"
-        elif tipo_evento == 'accepted':
-            usuario = random.choice(usuarios)
-            mensaje = f"Accepted password for {usuario} from {ip} port {random.randint(1000, 65535)}"
-        elif tipo_evento == 'port_scan':
-            # Para simular un escaneo, hago que se conecte a un puerto aleatorio (normalmente bajos)
-            puerto = random.randint(1, 1024)
-            mensaje = f"Connection attempt on port {puerto} from {ip}"
-        else:
-            # Eventos normales, típicos de logs de sistemas
-            mensaje = random.choice([
-                f"Session opened for user {random.choice(usuarios)} by (uid=0)",
-                "Received disconnect from unknown",
-                "pam_unix(sshd:session): session closed for user",
-                "Server listening on 0.0.0.0 port 22."
-            ])
+    actividad = Table(title="IPs con mayor actividad", header_style="bold bright_green", expand=True)
+    actividad.add_column("IP", style="cyan")
+    actividad.add_column("Eventos", justify="right")
+    actividad.add_column("Fallos", justify="right")
+    actividad.add_column("Accesos", justify="right")
+    actividad.add_column("Errores web", justify="right")
+    for ip, eventos in sorted(stats["eventos_por_ip"].items(), key=lambda item: sum(item[1].values()), reverse=True)[:8]:
+        actividad.add_row(ip, str(sum(eventos.values())), str(eventos["failed"]), str(eventos["accepted"]), str(eventos["web_error"]))
+    consola.print(actividad)
 
-        linea = f"{timestamp} INFO {servicio}[{pid}]: {mensaje}"
-        logs.append(linea)
 
-    return logs
-
-# = ANÁLISIS DE LOGS =
-def parsear_linea(linea):
-    """
-    Esta función es la que se encarga de sacar la información útil de cada línea:
-    timestamp, IP, tipo de evento y puerto (si lo hay).
-    Si no encuentra algo, devuelve None.
-    """
-    # Primero busco la fecha al principio de la línea
-    patron_tiempo = r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})'
-    match = re.match(patron_tiempo, linea)
-    if not match:
-        return None, None, None, None
-    timestamp_str = match.group(1)
-    timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
-
-    # Luego intento encontrar una IP
-    patron_ip = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
-    ip_match = re.search(patron_ip, linea)
-    ip = ip_match.group(1) if ip_match else None
-
-    # Y también un puerto, si aparece
-    patron_puerto = r'port (\d+)'
-    puerto_match = re.search(patron_puerto, linea)
-    puerto = int(puerto_match.group(1)) if puerto_match else None
-
-    # Clasifico el evento según el contenido del mensaje
-    if 'Failed password' in linea:
-        evento = 'failed'
-    elif 'Accepted password' in linea:
-        evento = 'accepted'
-    elif 'Connection attempt on port' in linea:
-        evento = 'port_scan'
-    else:
-        evento = 'other'
-
-    return timestamp, ip, evento, puerto
-
-def analizar_logs(lineas):
-    """
-    Aquí es donde hago el análisis gordo. Proceso línea por línea, voy acumulando estadísticas
-    y al final detecto IPs sospechosas.
-    """
-    stats = {
-        'total_lineas': len(lineas),
-        'eventos_por_ip': defaultdict(lambda: {'failed': 0, 'accepted': 0, 'port_scan': 0, 'other': 0}),
-        'puertos_por_ip': defaultdict(set),
-        'timestamps_por_ip': defaultdict(list),  # Esto es para luego calcular la fuerza bruta por tiempo
-        'ips_sospechosas_bf': set(),
-        'ips_sospechosas_scan': set(),
-    }
-
-    # Si tengo tqdm (librería para generar barra de progreso), genera la barra que se ve má realista.
-    iterador = tqdm(lineas, desc="Analizando logs", unit=" líneas") if HAS_TQDM else lineas
-
-    for linea in iterador:
-        time.sleep(0.75)  # Este sleep sirve para no generar saturación en el proceso (importante por si tiramos un nmap)
-        timestamp, ip, evento, puerto = parsear_linea(linea)
-        if not ip:
-            continue  # Si no hay IP, me salto la línea, no me sirve
-
-        # Voy llenando las estadísticas
-        stats['eventos_por_ip'][ip][evento] += 1
-        if puerto:
-            stats['puertos_por_ip'][ip].add(puerto)
-        if evento == 'failed':
-            stats['timestamps_por_ip'][ip].append(timestamp)
-
-    # Detectar fuerza bruta: miro si hay muchos fallos en poco tiempo desde la misma IP
-    for ip, timestamps in stats['timestamps_por_ip'].items():
-        timestamps.sort()
-        for i in range(len(timestamps)):
-            count = 1
-            for j in range(i+1, len(timestamps)):
-                if (timestamps[j] - timestamps[i]).total_seconds() <= VENTANA_TIEMPO:
-                    count += 1
-                else:
-                    break
-            if count >= UMBRAL_FUERZA_BRUTA:
-                stats['ips_sospechosas_bf'].add(ip)
-                break  # Una vez que sé que es sospechosa, no necesito seguir mirando
-
-    # Detectar escaneo: si una IP ha tocado muchos puertos distintos
-    for ip, puertos in stats['puertos_por_ip'].items():
-        if len(puertos) >= PUERTOS_ESCANEO:
-            stats['ips_sospechosas_scan'].add(ip)
-
-    return stats
-
-def generar_reporte_consola(stats):
-    """
-    Saco un informe por consola con los resultados más importantes.
-    Es como un resumen rápido para verlo sin abrir el HTML.
-    """
-    print("\n" + "="*60)
-    print(" INFORME DE ANÁLISIS DE LOGS".center(60))
-    print("="*60)
-
-    print(f"\n Líneas procesadas: {stats['total_lineas']}")
-    print(f" IPs únicas detectadas: {len(stats['eventos_por_ip'])}")
-
-    print("\n IPs sospechosas de FUERZA BRUTA:")
-    if stats['ips_sospechosas_bf']:
-        for ip in sorted(stats['ips_sospechosas_bf']):
-            fallos = stats['eventos_por_ip'][ip]['failed']
-            print(f"   - {ip} ({fallos} intentos fallidos)")
-    else:
-        print("   No se detectaron ataques de fuerza bruta.")
-
-    print("\n IPs sospechosas de ESCANEO DE PUERTOS:")
-    if stats['ips_sospechosas_scan']:
-        for ip in sorted(stats['ips_sospechosas_scan']):
-            puertos = sorted(stats['puertos_por_ip'][ip])
-            print(f"   - {ip} (puertos: {', '.join(map(str, puertos[:5]))}{'...' if len(puertos)>5 else ''})")
-    else:
-        print("   No se detectaron escaneos de puertos.")
-
-    print("\n Resumen de eventos por IP (top 5):")
-    top_ips = sorted(stats['eventos_por_ip'].items(), key=lambda x: sum(x[1].values()), reverse=True)[:5]
-    for ip, eventos in top_ips:
-        total = sum(eventos.values())
-        print(f"   {ip}: {total} eventos (failed: {eventos['failed']}, accepted: {eventos['accepted']}, scan: {eventos['port_scan']})")
-
-    print("\n" + "="*60)
-
-def generar_reporte_html(stats, archivo_salida="logs_report.html"):
-    """
-    Esta es la función que me genera el informe en HTML con un diseño más profesional.
-    Uso Jinja2 para rellenar la plantilla que tengo en la carpeta templates.
-    Además, al final lo abro automáticamente en el navegador para no tener que buscarlo.
-    """
-    # Preparo el entorno de Jinja2 apuntando a la carpeta templates
-    template_dir = os.path.join(os.path.dirname(__file__), 'templates')
-    env = Environment(loader=FileSystemLoader(template_dir))
-    template = env.get_template('reporte.html')
-
-    # Calculo el top 5 de IPs por actividad para mostrarlo en el informe
-    top_ips = sorted(stats['eventos_por_ip'].items(), key=lambda x: sum(x[1].values()), reverse=True)[:5]
-
-    # Fecha de generación con formato legible
-    fecha_generacion = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-
-    # Relleno la plantilla con los datos
-    html_content = template.render(
-        stats=stats,
-        top_ips=top_ips,
-        total_lineas=stats['total_lineas'],
-        fecha_generacion=fecha_generacion
+def generar_reporte_html(stats, archivo_salida):
+    template_dir = Path(__file__).parent / "templates"
+    entorno = Environment(
+        loader=FileSystemLoader(template_dir),
+        autoescape=select_autoescape(["html", "xml"]),
     )
+    plantilla = entorno.get_template("reporte.html")
+    top_ips = sorted(stats["eventos_por_ip"].items(), key=lambda item: sum(item[1].values()), reverse=True)[:8]
+    destino = Path(archivo_salida).resolve()
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    css_origen = Path(__file__).parent / "assets" / "reporte.css"
+    css_destino = destino.parent / "assets" / "reporte.css"
+    if css_origen.resolve() != css_destino.resolve():
+        css_destino.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(css_origen, css_destino)
+    destino.write_text(
+        plantilla.render(
+            stats=stats,
+            top_ips=top_ips,
+            total_lineas=stats["total_lineas"],
+            fecha_generacion=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        ),
+        encoding="utf-8",
+    )
+    return destino
 
-    # Guardo el archivo HTML en el directorio actual
-    with open(archivo_salida, 'w', encoding='utf-8') as f:
-        f.write(html_content)
 
-    print(f" Informe HTML generado: {archivo_salida}")
-
-    # Intento abrirlo en el navegador por defecto
-    try:
-        webbrowser.open(archivo_salida)
-        print(" Abriendo informe en el navegador...")
-    except Exception as e:
-        print(f"[!] No se pudo abrir el navegador automáticamente: {e}")
-
-# = MAIN CODE =
 def main():
-    """
-    Aquí es donde empieza todo. Recojo los argumentos de la terminal,
-    decido si uso un archivo real o genero logs falsos, y lanzo el análisis.
-    """
-    parser = argparse.ArgumentParser(description="Mi analizador de logs de seguridad")
-    parser.add_argument('archivo', nargs='?', help="Archivo de log a analizar (si no se especifica, se generan logs simulados)")
-    parser.add_argument('-n', '--num-lineas', type=int, default=200, help="Número de líneas a generar si no hay archivo (default: 200)")
-    parser.add_argument('--no-html', action='store_true', help="Si no quiero que genere el HTML, solo consola")
+    parser = argparse.ArgumentParser(
+        description="Analiza logs reales de autenticación, servidores web y firewall.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("archivo", help="Ruta a un log de texto o una rotación .gz")
+    parser.add_argument("--umbral-bf", type=_positivo, default=5, help="Fallos de autenticación dentro de la ventana")
+    parser.add_argument("--ventana", type=_positivo, default=60, help="Ventana de fuerza bruta, en segundos")
+    parser.add_argument("--umbral-scan", type=_positivo, default=5, help="Puertos de destino distintos para alertar")
+    parser.add_argument("--umbral-web", type=_positivo, default=10, help="Rutas 404 distintas para alertar")
+    parser.add_argument("--html", nargs="?", const="logs_report.html", metavar="RUTA", help="Genera un informe HTML (ruta opcional)")
+    parser.add_argument("--abrir-html", action="store_true", help="Abre el informe HTML al terminar")
     args = parser.parse_args()
+    if args.abrir_html and not args.html:
+        parser.error("--abrir-html requiere --html")
 
-    if args.archivo:
-        # Si me pasaron un archivo, intento leerlo
-        try:
-            with open(args.archivo, 'r', encoding='utf-8') as f:
-                lineas = f.readlines()
-            print(f"[+] Leyendo {len(lineas)} líneas de {args.archivo}")
-        except FileNotFoundError:
-            print(f"[!] Archivo no encontrado: {args.archivo}")
-            sys.exit(1)
-    else:
-        # Si no, genero logs simulados con el número de líneas indicado
-        print(f"[+] Generando {args.num_lineas} líneas de log simuladas...")
-        lineas = generar_logs_simulados(args.num_lineas)
+    try:
+        lineas = leer_archivo_logs(args.archivo)
+    except (OSError, EOFError) as error:
+        parser.error(f"no se pudo leer '{args.archivo}': {error}")
 
-    # Proceso las líneas y obtengo las estadísticas
-    stats = analizar_logs(lineas)
+    stats = analizar_logs(lineas, args.umbral_bf, args.ventana, args.umbral_scan, args.umbral_web)
+    generar_reporte_consola(stats, args.archivo)
+    if args.html:
+        destino = generar_reporte_html(stats, args.html)
+        print(f"\nInforme HTML: {destino}")
+        if args.abrir_html:
+            webbrowser.open(destino.as_uri())
+    if not stats["lineas_reconocidas"]:
+        print("\nAviso: no se encontraron direcciones IP reconocibles en el archivo.", file=sys.stderr)
 
-    # Muestro el informe en consola (siempre lo hago)
-    generar_reporte_consola(stats)
-
-    # Si no me pidieron lo contrario, genero también el informe HTML
-    if not args.no_html:
-        generar_reporte_html(stats)
 
 if __name__ == "__main__":
     main()
